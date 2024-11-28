@@ -1,7 +1,13 @@
 # micr0 shell
 
-## Changes
-I renamed and moved things about to make it easier for me to integrate into other tools.
+## My Changes
+I made the IP address optional. If not supplied it will grab the `tun0` address, or if not present the first IP address that is not `127.0.0.`.
+
+I made the output a positional argument and removed the `--save` option. If an output file name is provided the script will save the raw shellcode to the file.
+
+I removed the banner.
+
+Most of the other changes really only affect the code readability and integration with other tools.
 
 
 ## Original README
